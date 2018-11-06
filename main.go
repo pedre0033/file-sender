@@ -9,14 +9,15 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/vladimirvivien/gowfs"
 	yaml "gopkg.in/yaml.v2"
 )
 
 // Conf ...
 type Conf struct {
 	ToBeProcessedPath string `yaml:"tobeprocessedpath"`
-	HdfsEndpointIP    string `yaml:"hdfsip"`
-	HdfsEndpointPort  string `yaml:"hdfsport"`
+	HdfsEndpointIP    string `yaml:"hdfsip,omitempty"`
+	HdfsEndpointPort  string `yaml:"hdfsport,omitempty"`
 	ProcessedPath     string `yaml:"processedpath"`
 	DstPath           string `yaml:"dstpath,omitempty"`
 }
@@ -28,6 +29,10 @@ type FileStats struct {
 }
 
 func main() {
+	fshdfs, err := gowfs.NewFileSystem(gowfs.Configuration{Addr: "localhost:50070", User: "hdfs"})
+	if err != nil {
+		log.Fatal(err)
+	}
 	var confVars Conf
 	var wg sync.WaitGroup
 	filesInfoChan := make(chan FileStats)
@@ -46,7 +51,7 @@ func main() {
 	wg.Add(1)
 	go filestobeproc(confVars.ToBeProcessedPath, filesInfoChan, &wg)
 	wg.Add(1)
-	go processiofiles(filesInfoChan, confVars.ProcessedPath, &wg)
+	go processiofiles(filesInfoChan, confVars.ProcessedPath, &wg, fshdfs)
 	wg.Wait()
 
 }
@@ -63,7 +68,7 @@ func filestobeproc(rootpath string, ch chan FileStats, wg *sync.WaitGroup) chan 
 	return ch
 }
 
-func processiofiles(ch <-chan FileStats, procpath string, wg *sync.WaitGroup) error {
+func processiofiles(ch <-chan FileStats, procpath string, wg *sync.WaitGroup, fshdfs *gowfs.FileSystem) error {
 	if _, err := os.Stat(procpath); os.IsNotExist(err) {
 		os.Mkdir(procpath, os.FileMode(uint32(0777)))
 	}
@@ -74,8 +79,23 @@ func processiofiles(ch <-chan FileStats, procpath string, wg *sync.WaitGroup) er
 		buildString.WriteString(procpath)
 		buildString.WriteString("/")
 		buildString.WriteString(fs.FileName)
-		err = os.Rename(fs.Path, buildString.String())
-		buildString.Reset()
+		oldpath, _ := os.Open(fs.Path)
+		ok, er := fshdfs.Create(
+			oldpath,
+			gowfs.Path{Name: "/tmp/" + fs.FileName},
+			false,
+			0,
+			0,
+			0700,
+			0,
+		)
+		if ok {
+			err = os.Rename(fs.Path, buildString.String())
+			buildString.Reset()
+		} else {
+			panic(er)
+		}
+
 	}
 	if err != nil {
 		panic(err)
